@@ -32,6 +32,7 @@ export type CaseRecord = {
   evidence: EvidenceItem[];
   uncertainties: UncertaintyItem[];
   missingFields: string[];
+  processingError?: string;
   createdAt: number;
   updatedAt: number;
 };

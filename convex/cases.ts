@@ -127,6 +127,40 @@ export const getForProcessing = internalQuery({
   handler: async (ctx, args) => await ownedCase(ctx, args.caseId, args.userId),
 });
 
+export const saveTranscriptForProcessing = internalMutation({
+  args: {
+    userId: v.string(),
+    caseId: v.id("cases"),
+    transcript: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ownedCase(ctx, args.caseId, args.userId);
+    await ctx.db.patch(args.caseId, {
+      transcript: args.transcript,
+      processingError: "",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const saveProcessingFailure = internalMutation({
+  args: {
+    userId: v.string(),
+    caseId: v.id("cases"),
+    transcript: v.optional(v.string()),
+    message: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ownedCase(ctx, args.caseId, args.userId);
+    const patch: { transcript?: string; processingError: string; updatedAt: number } = {
+      processingError: args.message,
+      updatedAt: Date.now(),
+    };
+    if (args.transcript) patch.transcript = args.transcript;
+    await ctx.db.patch(args.caseId, patch);
+  },
+});
+
 export const saveProcessed = internalMutation({
   args: {
     userId: v.string(),
@@ -165,6 +199,7 @@ export const saveProcessed = internalMutation({
       evidence: args.evidence,
       uncertainties: args.uncertainties,
       missingFields: args.missingFields,
+      processingError: "",
       status: args.missingFields.length ? "draft" : "ready",
       updatedAt: Date.now(),
     });

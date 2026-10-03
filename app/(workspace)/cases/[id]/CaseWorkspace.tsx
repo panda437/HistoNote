@@ -109,6 +109,7 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
   async function handleFinishedRecording(blob: Blob) {
     if (discardRef.current || !blob.size) return;
     setProcessing(true);
+    setCaseItem((current) => ({ ...current, processingError: "" }));
     setNotice("Saving recording…");
     setError("");
     try {
@@ -202,6 +203,7 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
   async function processTranscript() {
     if (!caseItem.transcript.trim()) return;
     setProcessing(true);
+    setCaseItem((current) => ({ ...current, processingError: "" }));
     setError("");
     setNotice("Structuring your edited transcript…");
     try {
@@ -213,6 +215,27 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
       setNotice("Structured draft refreshed.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not structure transcript");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function retryRecording(assetId: string) {
+    setProcessing(true);
+    setCaseItem((current) => ({ ...current, processingError: "" }));
+    setError("");
+    setNotice("Retrying transcription and report drafting…");
+    try {
+      await jsonRequest(`/api/cases/${caseItem._id}/process`, {
+        method: "POST",
+        body: JSON.stringify({ assetId }),
+      });
+      await reloadCase();
+      setNotice("Draft recovered from the saved recording.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not process the saved recording");
+      setNotice("");
+      await reloadCase().catch(() => undefined);
     } finally {
       setProcessing(false);
     }
@@ -272,6 +295,7 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
       </header>
 
       {(notice || error) && <div className={`toast-inline ${error ? "error" : ""}`}>{error ? <AlertCircle size={17} /> : <CheckCircle2 size={17} />}{error || notice}<button onClick={() => { setError(""); setNotice(""); }} aria-label="Dismiss">×</button></div>}
+      {!error && caseItem.processingError && <div className="toast-inline error"><AlertCircle size={17} />{caseItem.processingError}{caseItem.transcript.trim() && <button onClick={processTranscript} disabled={processing}>Retry from saved transcript</button>}</div>}
 
       <div className="workspace-grid">
         <div className="workspace-main">
@@ -306,7 +330,7 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
             <div className="transcript-head"><h3>Transcript</h3><button className="text-button" onClick={processTranscript} disabled={processing || !caseItem.transcript.trim()}><Sparkles size={15} /> Structure edited transcript</button></div>
             <textarea className="transcript-editor" value={caseItem.transcript} onChange={(e) => edit("transcript", e.target.value)} placeholder="Your transcript will appear here after the recording stops. You can also type or paste dictation." />
             {audioAssets.length > 0 && <div className="recording-list">
-              {audioAssets.slice(0, 3).map((asset) => <div key={asset._id}><FileAudio size={16} /><span>{asset.filename}</span>{asset.url && <audio controls preload="metadata" src={asset.url} />}</div>)}
+              {audioAssets.slice(0, 3).map((asset) => <div key={asset._id}><FileAudio size={16} /><span>{asset.filename}</span>{asset.url && <audio controls preload="metadata" src={asset.url} />}<button className="text-button" onClick={() => retryRecording(asset._id)} disabled={processing}>Retry</button></div>)}
             </div>}
           </section>
 

@@ -38,6 +38,7 @@ export default defineSchema({
       }),
     ),
     missingFields: v.array(v.string()),
+    processingError: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
