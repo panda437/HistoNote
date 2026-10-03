@@ -57,6 +57,7 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
   const [assets, setAssets] = useState(initialAssets);
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [uploadingRecording, setUploadingRecording] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [silenceFor, setSilenceFor] = useState(0);
@@ -74,6 +75,7 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
   const startedRef = useRef(0);
   const saveTimerRef = useRef<number | null>(null);
   const discardRef = useRef(false);
+  const recordingUploadRef = useRef<HTMLInputElement | null>(null);
 
   async function reloadCase() {
     const data = await jsonRequest<{ case: CaseRecord; assets: CaseAsset[] }>(`/api/cases/${caseItem._id}`);
@@ -241,6 +243,34 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
     }
   }
 
+  async function uploadRecording(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setProcessing(true);
+    setUploadingRecording(true);
+    setCaseItem((current) => ({ ...current, processingError: "" }));
+    setError("");
+    setNotice("Uploading your recording…");
+    try {
+      const { assetId } = await uploadCaseAsset(caseItem._id, file, "audio");
+      setNotice("Transcribing and structuring the uploaded recording…");
+      await jsonRequest(`/api/cases/${caseItem._id}/process`, {
+        method: "POST",
+        body: JSON.stringify({ assetId }),
+      });
+      await reloadCase();
+      setNotice("Draft updated from your uploaded recording.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not process the uploaded recording");
+      setNotice("");
+      await reloadCase().catch(() => undefined);
+    } finally {
+      setUploadingRecording(false);
+      setProcessing(false);
+      event.target.value = "";
+    }
+  }
+
   async function uploadImages(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
@@ -306,18 +336,38 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
             </div>
 
             <div className="recorder-stage">
-              <button
-                className={`record-button ${recording ? "stop" : ""}`}
-                type="button"
-                onClick={recording ? () => stopRecording("manual") : startRecording}
-                disabled={processing}
-                aria-label={recording ? "Stop recording" : "Start recording"}
-              >
-                {processing ? <LoaderCircle className="spin" size={29} /> : recording ? <Square size={25} fill="currentColor" /> : <Mic2 size={31} />}
-              </button>
+              <div className="record-controls">
+                <button
+                  className={`record-button ${recording ? "stop" : ""}`}
+                  type="button"
+                  onClick={recording ? () => stopRecording("manual") : startRecording}
+                  disabled={processing}
+                  aria-label={recording ? "Stop recording" : "Start recording"}
+                >
+                  {processing && !uploadingRecording ? <LoaderCircle className="spin" size={29} /> : recording ? <Square size={25} fill="currentColor" /> : <Mic2 size={31} />}
+                </button>
+                <button
+                  className="recording-upload-button"
+                  type="button"
+                  onClick={() => recordingUploadRef.current?.click()}
+                  disabled={processing || recording}
+                  aria-label="Upload an audio recording"
+                  title="Upload an audio recording"
+                >
+                  {uploadingRecording ? <LoaderCircle className="spin" size={16} /> : <UploadCloud size={17} />}
+                </button>
+                <input
+                  ref={recordingUploadRef}
+                  className="recording-upload-input"
+                  type="file"
+                  accept=".mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm,audio/*"
+                  onChange={uploadRecording}
+                  disabled={processing || recording}
+                />
+              </div>
               <div className="record-status">
-                <strong>{recording ? clock(elapsed) : processing ? "Processing…" : "Press to start"}</strong>
-                <span>{recording ? `Auto-stop in ${clock(silenceLeft)} if silence continues` : "Recording will continue through pauses"}</span>
+                <strong>{recording ? clock(elapsed) : uploadingRecording ? "Uploading…" : processing ? "Processing…" : "Press to start"}</strong>
+                <span>{recording ? `Auto-stop in ${clock(silenceLeft)} if silence continues` : "Record here or upload audio from another recorder"}</span>
               </div>
               <div className={`live-wave ${recording ? "active" : ""}`} aria-hidden="true">
                 {Array.from({ length: 34 }, (_, index) => (
