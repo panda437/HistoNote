@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { assertServiceSecret } from "./security";
+import { requireSession } from "./security";
 
 const reportType = v.union(v.literal("gi_biopsy"), v.literal("breast_core"));
 const status = v.union(v.literal("draft"), v.literal("ready"), v.literal("completed"));
@@ -14,38 +14,40 @@ async function ownedCase(ctx: QueryCtx | MutationCtx, caseId: Id<"cases">, userI
 }
 
 export const list = query({
-  args: { secret: v.string(), userId: v.string() },
+  args: { sessionToken: v.string() },
   handler: async (ctx, args) => {
-    assertServiceSecret(args.secret);
+    const user = await requireSession(ctx, args.sessionToken);
     return await ctx.db
       .query("cases")
-      .withIndex("by_user_updated", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user_updated", (q) => q.eq("userId", user._id))
       .order("desc")
       .collect();
   },
 });
 
 export const get = query({
-  args: { secret: v.string(), userId: v.string(), caseId: v.id("cases") },
+  args: { sessionToken: v.string(), caseId: v.string() },
   handler: async (ctx, args) => {
-    assertServiceSecret(args.secret);
-    return await ownedCase(ctx, args.caseId, args.userId);
+    const user = await requireSession(ctx, args.sessionToken);
+    const caseId = ctx.db.normalizeId("cases", args.caseId);
+    if (!caseId) return null;
+    const item = await ctx.db.get(caseId);
+    return item?.userId === user._id ? item : null;
   },
 });
 
 export const create = mutation({
   args: {
-    secret: v.string(),
-    userId: v.string(),
+    sessionToken: v.string(),
     caseNumber: v.string(),
     title: v.string(),
     reportType,
   },
   handler: async (ctx, args) => {
-    assertServiceSecret(args.secret);
+    const user = await requireSession(ctx, args.sessionToken);
     const now = Date.now();
     return await ctx.db.insert("cases", {
-      userId: args.userId,
+      userId: user._id,
       caseNumber: args.caseNumber.trim(),
       title: args.title.trim() || "Untitled case",
       reportType: args.reportType,
@@ -69,8 +71,7 @@ export const create = mutation({
 
 export const update = mutation({
   args: {
-    secret: v.string(),
-    userId: v.string(),
+    sessionToken: v.string(),
     caseId: v.id("cases"),
     caseNumber: v.optional(v.string()),
     title: v.optional(v.string()),
@@ -85,31 +86,30 @@ export const update = mutation({
     report: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    assertServiceSecret(args.secret);
-    await ownedCase(ctx, args.caseId, args.userId);
-    await ctx.db.patch(args.caseId, {
-      caseNumber: args.caseNumber,
-      title: args.title,
-      status: args.status,
-      specimen: args.specimen,
-      clinicalHistory: args.clinicalHistory,
-      grossDescription: args.grossDescription,
-      microscopicDescription: args.microscopicDescription,
-      diagnosis: args.diagnosis,
-      comment: args.comment,
-      transcript: args.transcript,
-      report: args.report,
-      updatedAt: Date.now(),
-    });
+    const user = await requireSession(ctx, args.sessionToken);
+    await ownedCase(ctx, args.caseId, user._id);
+    const patch: Partial<Doc<"cases">> = { updatedAt: Date.now() };
+    if (args.caseNumber !== undefined) patch.caseNumber = args.caseNumber;
+    if (args.title !== undefined) patch.title = args.title;
+    if (args.status !== undefined) patch.status = args.status;
+    if (args.specimen !== undefined) patch.specimen = args.specimen;
+    if (args.clinicalHistory !== undefined) patch.clinicalHistory = args.clinicalHistory;
+    if (args.grossDescription !== undefined) patch.grossDescription = args.grossDescription;
+    if (args.microscopicDescription !== undefined) patch.microscopicDescription = args.microscopicDescription;
+    if (args.diagnosis !== undefined) patch.diagnosis = args.diagnosis;
+    if (args.comment !== undefined) patch.comment = args.comment;
+    if (args.transcript !== undefined) patch.transcript = args.transcript;
+    if (args.report !== undefined) patch.report = args.report;
+    await ctx.db.patch(args.caseId, patch);
     return args.caseId;
   },
 });
 
 export const remove = mutation({
-  args: { secret: v.string(), userId: v.string(), caseId: v.id("cases") },
+  args: { sessionToken: v.string(), caseId: v.id("cases") },
   handler: async (ctx, args) => {
-    assertServiceSecret(args.secret);
-    await ownedCase(ctx, args.caseId, args.userId);
+    const user = await requireSession(ctx, args.sessionToken);
+    await ownedCase(ctx, args.caseId, user._id);
     const assets = await ctx.db
       .query("assets")
       .withIndex("by_case", (q) => q.eq("caseId", args.caseId))

@@ -1,9 +1,5 @@
-import { redirect } from "next/navigation";
-import { auth } from "@/auth";
-import { AppShell } from "@/components/AppShell";
+import { WorkspaceGate } from "@/components/WorkspaceGate";
 
-export default async function WorkspaceLayout({ children }: { children: React.ReactNode }) {
-  const session = await auth();
-  if (!session) redirect("/login");
-  return <AppShell user={session.user}>{children}</AppShell>;
+export default function WorkspaceLayout({ children }: { children: React.ReactNode }) {
+  return <WorkspaceGate>{children}</WorkspaceGate>;
 }

@@ -7,6 +7,7 @@
 /coverage
 /.next/
 /out/
+/dist/
 
 # local environment — never commit secrets
 .env*

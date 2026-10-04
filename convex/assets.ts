@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { assertServiceSecret } from "./security";
+import { requireSession } from "./security";
 
 async function assertCaseOwner(ctx: QueryCtx | MutationCtx, caseId: Id<"cases">, userId: string) {
   const item = await ctx.db.get(caseId);
@@ -10,18 +10,17 @@ async function assertCaseOwner(ctx: QueryCtx | MutationCtx, caseId: Id<"cases">,
 }
 
 export const generateUploadUrl = mutation({
-  args: { secret: v.string(), userId: v.string(), caseId: v.id("cases") },
+  args: { sessionToken: v.string(), caseId: v.id("cases") },
   handler: async (ctx, args) => {
-    assertServiceSecret(args.secret);
-    await assertCaseOwner(ctx, args.caseId, args.userId);
+    const user = await requireSession(ctx, args.sessionToken);
+    await assertCaseOwner(ctx, args.caseId, user._id);
     return await ctx.storage.generateUploadUrl();
   },
 });
 
 export const attach = mutation({
   args: {
-    secret: v.string(),
-    userId: v.string(),
+    sessionToken: v.string(),
     caseId: v.id("cases"),
     storageId: v.id("_storage"),
     kind: v.union(v.literal("audio"), v.literal("image")),
@@ -30,10 +29,10 @@ export const attach = mutation({
     size: v.number(),
   },
   handler: async (ctx, args) => {
-    assertServiceSecret(args.secret);
-    await assertCaseOwner(ctx, args.caseId, args.userId);
+    const user = await requireSession(ctx, args.sessionToken);
+    await assertCaseOwner(ctx, args.caseId, user._id);
     return await ctx.db.insert("assets", {
-      userId: args.userId,
+      userId: user._id,
       caseId: args.caseId,
       storageId: args.storageId,
       kind: args.kind,
@@ -46,10 +45,10 @@ export const attach = mutation({
 });
 
 export const list = query({
-  args: { secret: v.string(), userId: v.string(), caseId: v.id("cases") },
+  args: { sessionToken: v.string(), caseId: v.id("cases") },
   handler: async (ctx, args) => {
-    assertServiceSecret(args.secret);
-    await assertCaseOwner(ctx, args.caseId, args.userId);
+    const user = await requireSession(ctx, args.sessionToken);
+    await assertCaseOwner(ctx, args.caseId, user._id);
     const rows = await ctx.db
       .query("assets")
       .withIndex("by_case", (q) => q.eq("caseId", args.caseId))
@@ -63,11 +62,11 @@ export const list = query({
 });
 
 export const remove = mutation({
-  args: { secret: v.string(), userId: v.string(), assetId: v.id("assets") },
+  args: { sessionToken: v.string(), assetId: v.id("assets") },
   handler: async (ctx, args) => {
-    assertServiceSecret(args.secret);
+    const user = await requireSession(ctx, args.sessionToken);
     const asset = await ctx.db.get(args.assetId);
-    if (!asset || asset.userId !== args.userId) throw new Error("Asset not found");
+    if (!asset || asset.userId !== user._id) throw new Error("Asset not found");
     await ctx.storage.delete(asset.storageId);
     await ctx.db.delete(asset._id);
   },

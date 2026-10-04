@@ -3,6 +3,7 @@
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { useAction, useMutation, useQuery } from "convex/react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -20,8 +21,10 @@ import {
   UploadCloud,
   XCircle,
 } from "lucide-react";
-import { jsonRequest, uploadCaseAsset } from "@/lib/client-api";
-import type { CaseAsset, CaseRecord } from "@/lib/types";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
+import { useAuthSession } from "@/components/ConvexClientProvider";
+import type { CaseRecord } from "@/lib/types";
 
 const SILENCE_LIMIT_MS = 3 * 60 * 1000;
 const FIELD_LABELS: Record<string, string> = {
@@ -36,6 +39,10 @@ const FIELD_LABELS: Record<string, string> = {
 type EditableField = keyof Pick<CaseRecord,
   "specimen" | "clinicalHistory" | "grossDescription" | "microscopicDescription" | "diagnosis" | "comment" | "transcript" | "report"
 >;
+
+type CasePatch = Partial<Pick<CaseRecord,
+  "caseNumber" | "title" | "status" | "specimen" | "clinicalHistory" | "grossDescription" | "microscopicDescription" | "diagnosis" | "comment" | "transcript" | "report"
+>>;
 
 function clock(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
@@ -52,9 +59,21 @@ function friendlyMissing(value: string) {
   return value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (letter) => letter.toUpperCase());
 }
 
-export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: CaseRecord; initialAssets: CaseAsset[] }) {
-  const [caseItem, setCaseItem] = useState(initialCase);
-  const [assets, setAssets] = useState(initialAssets);
+export function CaseWorkspace({ caseId }: { caseId: string }) {
+  const { sessionToken } = useAuthSession();
+  const remoteCase = useQuery(api.cases.get, sessionToken ? { sessionToken, caseId } : "skip");
+  const remoteAssets = useQuery(
+    api.assets.list,
+    sessionToken && remoteCase
+      ? { sessionToken, caseId: remoteCase._id }
+      : "skip",
+  );
+  const updateCase = useMutation(api.cases.update);
+  const generateUploadUrl = useMutation(api.assets.generateUploadUrl);
+  const attachAsset = useMutation(api.assets.attach);
+  const processDictation = useAction(api.processing.run);
+  const [localCase, setCaseItem] = useState<CaseRecord | null>(null);
+  const caseItem = localCase ?? (remoteCase ? remoteCase as CaseRecord : null);
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [uploadingRecording, setUploadingRecording] = useState(false);
@@ -77,16 +96,15 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
   const discardRef = useRef(false);
   const recordingUploadRef = useRef<HTMLInputElement | null>(null);
 
-  async function reloadCase() {
-    const data = await jsonRequest<{ case: CaseRecord; assets: CaseAsset[] }>(`/api/cases/${caseItem._id}`);
-    setCaseItem(data.case);
-    setAssets(data.assets);
-  }
-
-  async function savePatch(patch: Partial<CaseRecord>) {
+  async function savePatch(patch: CasePatch) {
+    if (!sessionToken || !caseItem) return;
     setSaveState("saving");
     try {
-      await jsonRequest(`/api/cases/${caseItem._id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      await updateCase({
+        sessionToken,
+        caseId: caseItem._id as Id<"cases">,
+        ...patch,
+      });
       setSaveState("saved");
     } catch {
       setSaveState("error");
@@ -94,10 +112,58 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
   }
 
   function edit(field: EditableField, value: string) {
-    setCaseItem((current) => ({ ...current, [field]: value }));
+    if (!caseItem) return;
+    setCaseItem((current) => current ? { ...current, [field]: value } : current);
     setSaveState("saving");
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => savePatch({ [field]: value }), 900);
+  }
+
+  async function uploadAsset(file: File, kind: "audio" | "image") {
+    if (!sessionToken || !caseItem) throw new Error("Your session has expired");
+    const uploadUrl = await generateUploadUrl({
+      sessionToken,
+      caseId: caseItem._id as Id<"cases">,
+    });
+    const upload = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    if (!upload.ok) throw new Error("File upload failed");
+    const { storageId } = await upload.json() as { storageId: Id<"_storage"> };
+    const assetId = await attachAsset({
+      sessionToken,
+      caseId: caseItem._id as Id<"cases">,
+      storageId,
+      kind,
+      filename: file.name,
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+    });
+    return { assetId };
+  }
+
+  async function runProcessing(input: { assetId?: Id<"assets">; transcript?: string }) {
+    if (!sessionToken || !caseItem) throw new Error("Your session has expired");
+    const result = await processDictation({
+      sessionToken,
+      caseId: caseItem._id as Id<"cases">,
+      ...input,
+    });
+    if (!result.ok) throw new Error(result.error);
+    setCaseItem((current) => {
+      const base = current ?? caseItem;
+      if (!base) return current;
+      return {
+        ...base,
+        transcript: result.transcript,
+        ...result.structured,
+        processingError: "",
+        status: result.structured.missingFields.length ? "draft" : "ready",
+      };
+    });
+    return result;
   }
 
   function clearRecorderResources() {
@@ -109,26 +175,21 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
   }
 
   async function handleFinishedRecording(blob: Blob) {
-    if (discardRef.current || !blob.size) return;
+    if (discardRef.current || !blob.size || !caseItem) return;
     setProcessing(true);
-    setCaseItem((current) => ({ ...current, processingError: "" }));
+    setCaseItem((current) => current ? { ...current, processingError: "" } : current);
     setNotice("Saving recording…");
     setError("");
     try {
       const extension = blob.type.includes("mp4") ? "m4a" : "webm";
       const file = new File([blob], `${caseItem.caseNumber}-dictation-${Date.now()}.${extension}`, { type: blob.type });
-      const { assetId } = await uploadCaseAsset(caseItem._id, file, "audio");
+      const { assetId } = await uploadAsset(file, "audio");
       setNotice("Transcribing and structuring…");
-      await jsonRequest(`/api/cases/${caseItem._id}/process`, {
-        method: "POST",
-        body: JSON.stringify({ assetId }),
-      });
-      await reloadCase();
+      await runProcessing({ assetId });
       setNotice("Draft updated from your dictation.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not process recording");
       setNotice("");
-      await reloadCase().catch(() => undefined);
     } finally {
       setProcessing(false);
     }
@@ -203,17 +264,13 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
   }
 
   async function processTranscript() {
-    if (!caseItem.transcript.trim()) return;
+    if (!caseItem?.transcript.trim()) return;
     setProcessing(true);
-    setCaseItem((current) => ({ ...current, processingError: "" }));
+    setCaseItem((current) => current ? { ...current, processingError: "" } : current);
     setError("");
     setNotice("Structuring your edited transcript…");
     try {
-      await jsonRequest(`/api/cases/${caseItem._id}/process`, {
-        method: "POST",
-        body: JSON.stringify({ transcript: caseItem.transcript }),
-      });
-      await reloadCase();
+      await runProcessing({ transcript: caseItem.transcript });
       setNotice("Structured draft refreshed.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not structure transcript");
@@ -222,22 +279,17 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
     }
   }
 
-  async function retryRecording(assetId: string) {
+  async function retryRecording(assetId: Id<"assets">) {
     setProcessing(true);
-    setCaseItem((current) => ({ ...current, processingError: "" }));
+    setCaseItem((current) => current ? { ...current, processingError: "" } : current);
     setError("");
     setNotice("Retrying transcription and report drafting…");
     try {
-      await jsonRequest(`/api/cases/${caseItem._id}/process`, {
-        method: "POST",
-        body: JSON.stringify({ assetId }),
-      });
-      await reloadCase();
+      await runProcessing({ assetId });
       setNotice("Draft recovered from the saved recording.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not process the saved recording");
       setNotice("");
-      await reloadCase().catch(() => undefined);
     } finally {
       setProcessing(false);
     }
@@ -245,25 +297,20 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
 
   async function uploadRecording(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file) return;
+    if (!file || !caseItem) return;
     setProcessing(true);
     setUploadingRecording(true);
-    setCaseItem((current) => ({ ...current, processingError: "" }));
+    setCaseItem((current) => current ? { ...current, processingError: "" } : current);
     setError("");
     setNotice("Uploading your recording…");
     try {
-      const { assetId } = await uploadCaseAsset(caseItem._id, file, "audio");
+      const { assetId } = await uploadAsset(file, "audio");
       setNotice("Transcribing and structuring the uploaded recording…");
-      await jsonRequest(`/api/cases/${caseItem._id}/process`, {
-        method: "POST",
-        body: JSON.stringify({ assetId }),
-      });
-      await reloadCase();
+      await runProcessing({ assetId });
       setNotice("Draft updated from your uploaded recording.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not process the uploaded recording");
       setNotice("");
-      await reloadCase().catch(() => undefined);
     } finally {
       setUploadingRecording(false);
       setProcessing(false);
@@ -277,8 +324,7 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
     setUploading(true);
     setError("");
     try {
-      for (const file of files) await uploadCaseAsset(caseItem._id, file, "image");
-      await reloadCase();
+      for (const file of files) await uploadAsset(file, "image");
       setNotice(`${files.length} image${files.length > 1 ? "s" : ""} saved to this case.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Image upload failed");
@@ -289,11 +335,13 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
   }
 
   async function markComplete() {
+    if (!caseItem) return;
     await savePatch({ status: caseItem.status === "completed" ? "draft" : "completed" });
-    setCaseItem((current) => ({ ...current, status: current.status === "completed" ? "draft" : "completed" }));
+    setCaseItem((current) => current ? { ...current, status: current.status === "completed" ? "draft" : "completed" } : current);
   }
 
   async function copyReport() {
+    if (!caseItem) return;
     await navigator.clipboard.writeText(caseItem.report || buildReport(caseItem));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
@@ -305,6 +353,14 @@ export function CaseWorkspace({ initialCase, initialAssets }: { initialCase: Cas
     clearRecorderResources();
   }, []);
 
+  if (remoteCase === undefined || !caseItem) {
+    if (remoteCase === null) {
+      return <main className="not-found"><p className="overline">CASE NOT FOUND</p><h1>This case is not in your workspace.</h1><p>It may have been removed, or the link belongs to another account.</p><Link className="button button-primary" href="/dashboard">Return to cases</Link></main>;
+    }
+    return <main className="case-loading"><div className="skeleton wide" /><div className="skeleton-grid"><div className="skeleton" /><div className="skeleton" /></div></main>;
+  }
+
+  const assets = remoteAssets ?? [];
   const audioAssets = assets.filter((asset) => asset.kind === "audio");
   const imageAssets = assets.filter((asset) => asset.kind === "image");
   const silenceLeft = Math.max(0, Math.ceil((SILENCE_LIMIT_MS - silenceFor * 1000) / 1000));

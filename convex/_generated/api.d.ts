@@ -9,6 +9,8 @@
  */
 
 import type * as assets from "../assets.js";
+import type * as auth from "../auth.js";
+import type * as authActions from "../authActions.js";
 import type * as cases from "../cases.js";
 import type * as processing from "../processing.js";
 import type * as security from "../security.js";
@@ -22,6 +24,8 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   assets: typeof assets;
+  auth: typeof auth;
+  authActions: typeof authActions;
   cases: typeof cases;
   processing: typeof processing;
   security: typeof security;
@@ -54,4 +58,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  staticHosting: import("@convex-dev/static-hosting/_generated/component.js").ComponentApi<"staticHosting">;
+};

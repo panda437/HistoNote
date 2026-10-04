@@ -1,18 +1,26 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { signIn } from "next-auth/react";
+import { FormEvent, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { useAction, useQuery } from "convex/react";
 import { ArrowRight, LoaderCircle, LockKeyhole, ShieldCheck } from "lucide-react";
+import { api } from "@/convex/_generated/api";
 import { Logo } from "@/components/Logo";
-import { jsonRequest } from "@/lib/client-api";
+import { useAuthSession } from "@/components/ConvexClientProvider";
 
 export function LoginForm() {
   const params = useSearchParams();
-  const router = useRouter();
+  const { sessionToken, ready, saveSession } = useAuthSession();
+  const currentUser = useQuery(api.auth.currentUser, sessionToken ? { sessionToken } : "skip");
+  const signIn = useAction(api.authActions.signIn);
+  const signUp = useAction(api.authActions.signUp);
   const [mode, setMode] = useState<"login" | "signup">(params.get("mode") === "signup" ? "signup" : "login");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (ready && currentUser) window.location.replace("/dashboard");
+  }, [currentUser, ready]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -22,16 +30,13 @@ export function LoginForm() {
     const email = String(form.get("email") || "");
     const password = String(form.get("password") || "");
     try {
-      if (mode === "signup") {
-        await jsonRequest("/api/signup", {
-          method: "POST",
-          body: JSON.stringify({ name: form.get("name"), email, password }),
-        });
-      }
-      const result = await signIn("credentials", { email, password, redirect: false });
-      if (result?.error) throw new Error(mode === "signup" ? "Account created, but sign-in failed" : "Incorrect email or password");
-      router.push("/dashboard");
-      router.refresh();
+      const result = mode === "signup"
+        ? await signUp({ name: String(form.get("name") || ""), email, password })
+        : await signIn({ email, password });
+      saveSession(result.token);
+      // Use a document navigation so the static-hosting SPA fallback owns the route.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.assign("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Please try again");
     } finally {

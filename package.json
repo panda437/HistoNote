@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "deploy": "npx @convex-dev/static-hosting deploy",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "setup:env": "node scripts/setup-local-env.mjs",
@@ -13,12 +13,12 @@
     "convex:deploy": "convex deploy"
   },
   "dependencies": {
+    "@convex-dev/static-hosting": "^0.2.1",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "convex": "^1.46.0",
     "lucide-react": "^1.50.0",
     "next": "^16.3.8",
-    "next-auth": "5.0.0-beta.32",
     "openai": "^7.27.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

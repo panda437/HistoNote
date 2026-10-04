@@ -9,6 +9,15 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_email", ["email"]),
 
+  sessions: defineTable({
+    userId: v.string(),
+    token: v.string(),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+  })
+    .index("by_token", ["token"])
+    .index("by_user", ["userId"]),
+
   cases: defineTable({
     userId: v.string(),
     caseNumber: v.string(),

@@ -7,7 +7,6 @@ import { z } from "zod";
 import { action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
-import { assertServiceSecret } from "./security";
 
 const outputSchema = {
   type: "object",
@@ -175,16 +174,17 @@ async function generateStructuredReport(client: OpenAI, caseItem: Doc<"cases">, 
 
 export const run = action({
   args: {
-    secret: v.string(),
-    userId: v.string(),
+    sessionToken: v.string(),
     caseId: v.id("cases"),
     assetId: v.optional(v.id("assets")),
     transcript: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<ProcessingResult> => {
-    assertServiceSecret(args.secret);
+    const user = await ctx.runQuery(internal.auth.getUserForSession, {
+      sessionToken: args.sessionToken,
+    });
     const caseItem: Doc<"cases"> = await ctx.runQuery(internal.cases.getForProcessing, {
-      userId: args.userId,
+      userId: user._id,
       caseId: args.caseId,
     });
 
@@ -195,7 +195,7 @@ export const run = action({
       if (!transcript) {
         if (!args.assetId) throw new Error("A recording or transcript is required");
         const asset: Doc<"assets"> = await ctx.runQuery(internal.assets.getForProcessing, {
-          userId: args.userId,
+          userId: user._id,
           assetId: args.assetId,
         });
         if (asset.caseId !== args.caseId) throw new Error("Recording does not belong to this case");
@@ -216,14 +216,14 @@ export const run = action({
       if (!transcript) throw new Error("No speech was detected in the recording");
 
       await ctx.runMutation(internal.cases.saveTranscriptForProcessing, {
-        userId: args.userId,
+        userId: user._id,
         caseId: args.caseId,
         transcript,
       });
 
       const structured = await generateStructuredReport(client, caseItem, transcript);
       await ctx.runMutation(internal.cases.saveProcessed, {
-        userId: args.userId,
+        userId: user._id,
         caseId: args.caseId,
         transcript,
         ...structured,
@@ -241,7 +241,7 @@ export const run = action({
         transcript?: string;
         message: string;
       } = {
-        userId: args.userId,
+        userId: user._id,
         caseId: args.caseId,
         message,
       };
