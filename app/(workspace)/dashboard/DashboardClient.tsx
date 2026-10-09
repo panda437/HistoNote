@@ -6,12 +6,7 @@ import { useMutation, useQuery } from "convex/react";
 import { CalendarDays, ChevronRight, FilePlus2, LoaderCircle, Mic2, Search, X } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { useAuthSession } from "@/components/ConvexClientProvider";
-import type { ReportType } from "@/lib/types";
-
-const REPORT_TYPES: Record<ReportType, string> = {
-  gi_biopsy: "GI biopsy",
-  breast_core: "Breast core biopsy",
-};
+import { REPORT_TYPE_LABELS, type ReportType } from "@/lib/types";
 
 function formatDate(timestamp: number) {
   return new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" }).format(timestamp);
@@ -30,7 +25,7 @@ export function DashboardClient() {
 
   const caseItems = cases ?? [];
   const filtered = caseItems.filter((item) =>
-    `${item.caseNumber} ${item.title} ${REPORT_TYPES[item.reportType]}`.toLowerCase().includes(query.toLowerCase()),
+    `${item.caseNumber} ${item.title} ${REPORT_TYPE_LABELS[item.reportType]}`.toLowerCase().includes(query.toLowerCase()),
   );
 
   async function createCase(event: FormEvent<HTMLFormElement>) {
@@ -80,7 +75,7 @@ export function DashboardClient() {
             {filtered.map((item) => (
               <a href={`/cases/${item._id}`} className="case-row" key={item._id}>
                 <span className="case-title"><strong>{item.caseNumber}</strong><small>{item.title}</small></span>
-                <span>{REPORT_TYPES[item.reportType]}</span>
+                <span>{REPORT_TYPE_LABELS[item.reportType]}</span>
                 <span className="date-cell"><CalendarDays size={15} /> {formatDate(item.updatedAt)}</span>
                 <span><i className={`status-dot ${item.status}`} /> {item.status === "ready" ? "Ready to review" : item.status}</span>
                 <span><ChevronRight size={18} /></span>
@@ -107,7 +102,7 @@ export function DashboardClient() {
             <form onSubmit={createCase}>
               <label>Case / accession number<input name="caseNumber" required autoFocus placeholder="e.g. H26-00418" /></label>
               <label>Short label <span>(optional)</span><input name="title" placeholder="e.g. Gastric biopsy" /></label>
-              <label>Report type<select name="reportType" defaultValue="gi_biopsy"><option value="gi_biopsy">GI biopsy</option><option value="breast_core">Breast core biopsy</option></select></label>
+              <label>Report type<select name="reportType" defaultValue="gi_biopsy">{Object.entries(REPORT_TYPE_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
               {error && <div className="form-error">{error}</div>}
               <button className="button button-primary modal-submit" disabled={loading}>{loading && <LoaderCircle className="spin" size={18} />} Open case <ChevronRight size={17} /></button>
             </form>

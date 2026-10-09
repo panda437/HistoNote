@@ -4,7 +4,20 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireSession } from "./security";
 
-const reportType = v.union(v.literal("gi_biopsy"), v.literal("breast_core"));
+const reportType = v.union(
+  v.literal("gi_biopsy"),
+  v.literal("breast_core"),
+  v.literal("breast_excision"),
+  v.literal("colorectal_resection"),
+  v.literal("gastric_resection"),
+  v.literal("lung_biopsy"),
+  v.literal("lung_resection"),
+  v.literal("prostate_core"),
+  v.literal("prostatectomy"),
+  v.literal("endometrial_biopsy"),
+  v.literal("hysterectomy"),
+  v.literal("skin_excision"),
+);
 const status = v.union(v.literal("draft"), v.literal("ready"), v.literal("completed"));
 
 async function ownedCase(ctx: QueryCtx | MutationCtx, caseId: Id<"cases">, userId: string): Promise<Doc<"cases">> {
@@ -201,6 +214,27 @@ export const saveProcessed = internalMutation({
       missingFields: args.missingFields,
       processingError: "",
       status: args.missingFields.length ? "draft" : "ready",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const saveReview = internalMutation({
+  args: {
+    userId: v.string(),
+    caseId: v.id("cases"),
+    missingFields: v.array(v.string()),
+    uncertainties: v.array(v.object({
+      field: v.string(),
+      issue: v.string(),
+      sourceQuote: v.string(),
+    })),
+  },
+  handler: async (ctx, args) => {
+    await ownedCase(ctx, args.caseId, args.userId);
+    await ctx.db.patch(args.caseId, {
+      missingFields: args.missingFields,
+      uncertainties: args.uncertainties,
       updatedAt: Date.now(),
     });
   },

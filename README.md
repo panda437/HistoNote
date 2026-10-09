@@ -5,11 +5,12 @@ Voice-first reporting for histopathologists. A pathologist records a natural dic
 ## V1 workflow
 
 1. Create a private pathologist account with Convex-native authentication.
-2. Start a GI biopsy or breast core biopsy case.
+2. Start one of twelve biopsy, excision, or resection report types.
 3. Record continuously. Recording stops only when the user stops it or three minutes of uninterrupted silence are detected.
 4. The recording uploads directly to Convex storage.
-5. A Convex action sends the recording to OpenAI speech-to-text and sends the transcript through a strict structured-output schema.
-6. The pathologist reviews the transcript, structured fields, source evidence, uncertainties, missing items, and final editable report.
+5. A Convex action sends each recording to OpenAI speech-to-text, stores its approximate sentence timeline, and appends it to the cumulative case transcript.
+6. The report draft is rebuilt from every recording while preserving supported edits and surfacing unresolved conflicts.
+7. The pathologist can run a gap check, then receives a pre-completion review before marking the case complete.
 
 ## Architecture
 
@@ -56,3 +57,8 @@ npx convex dev --once
 HistoNote is a drafting aid, not a diagnostic system. The extraction prompt and schema are designed to leave unsupported fields blank and require verbatim transcript evidence for populated clinical fields. Every generated report still requires review and sign-out by a qualified pathologist.
 
 This V1 has not been certified for HIPAA or any equivalent health-data regulation. Do not enter identifiable patient information until the deployment has completed an appropriate security, privacy, retention, audit, contractual, and regulatory review.
+
+## Backlog
+
+- Add an evidence side panel for staging guides and standards, with links to each cited primary source.
+- Add true in-progress transcription for long recordings through the OpenAI Realtime transcription API; file-upload streaming only processes a completed recording.

@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { internalQuery, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { requireSession } from "./security";
@@ -27,6 +27,8 @@ export const attach = mutation({
     filename: v.string(),
     mimeType: v.string(),
     size: v.number(),
+    recordedAt: v.optional(v.number()),
+    durationMs: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const user = await requireSession(ctx, args.sessionToken);
@@ -39,6 +41,8 @@ export const attach = mutation({
       filename: args.filename,
       mimeType: args.mimeType,
       size: args.size,
+      recordedAt: args.recordedAt,
+      durationMs: args.durationMs,
       createdAt: Date.now(),
     });
   },
@@ -80,5 +84,42 @@ export const getForProcessing = internalQuery({
       throw new Error("Audio recording not found");
     }
     return asset;
+  },
+});
+
+export const saveTranscription = internalMutation({
+  args: {
+    userId: v.string(),
+    assetId: v.id("assets"),
+    transcript: v.string(),
+    transcriptSegments: v.array(v.object({
+      startMs: v.number(),
+      endMs: v.number(),
+      text: v.string(),
+    })),
+  },
+  handler: async (ctx, args) => {
+    const asset = await ctx.db.get(args.assetId);
+    if (!asset || asset.userId !== args.userId || asset.kind !== "audio") {
+      throw new Error("Audio recording not found");
+    }
+    await ctx.db.patch(args.assetId, {
+      transcript: args.transcript,
+      transcriptSegments: args.transcriptSegments,
+      processingError: "",
+    });
+  },
+});
+
+export const saveProcessingFailure = internalMutation({
+  args: {
+    userId: v.string(),
+    assetId: v.id("assets"),
+    message: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const asset = await ctx.db.get(args.assetId);
+    if (!asset || asset.userId !== args.userId || asset.kind !== "audio") return;
+    await ctx.db.patch(args.assetId, { processingError: args.message });
   },
 });

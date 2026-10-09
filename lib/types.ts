@@ -1,4 +1,19 @@
-export type ReportType = "gi_biopsy" | "breast_core";
+export const REPORT_TYPE_LABELS = {
+  gi_biopsy: "GI biopsy",
+  breast_core: "Breast core biopsy",
+  breast_excision: "Breast excision",
+  colorectal_resection: "Colorectal resection",
+  gastric_resection: "Gastric resection",
+  lung_biopsy: "Lung biopsy",
+  lung_resection: "Lung resection",
+  prostate_core: "Prostate core biopsy",
+  prostatectomy: "Prostatectomy",
+  endometrial_biopsy: "Endometrial biopsy",
+  hysterectomy: "Hysterectomy",
+  skin_excision: "Skin excision",
+} as const;
+
+export type ReportType = keyof typeof REPORT_TYPE_LABELS;
 export type CaseStatus = "draft" | "ready" | "completed";
 
 export type EvidenceItem = {
@@ -47,6 +62,15 @@ export type CaseAsset = {
   filename: string;
   mimeType: string;
   size: number;
+  recordedAt?: number;
+  durationMs?: number;
+  transcript?: string;
+  transcriptSegments?: Array<{
+    startMs: number;
+    endMs: number;
+    text: string;
+  }>;
+  processingError?: string;
   createdAt: number;
   url: string | null;
 };

@@ -12,6 +12,7 @@ import {
   Clipboard,
   FileAudio,
   ImagePlus,
+  ListChecks,
   LoaderCircle,
   Mic2,
   Save,
@@ -24,7 +25,7 @@ import {
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useAuthSession } from "@/components/ConvexClientProvider";
-import type { CaseRecord } from "@/lib/types";
+import { REPORT_TYPE_LABELS, type CaseRecord } from "@/lib/types";
 
 const SILENCE_LIMIT_MS = 3 * 60 * 1000;
 const FIELD_LABELS: Record<string, string> = {
@@ -51,12 +52,45 @@ function clock(totalSeconds: number) {
 }
 
 function reportTypeLabel(type: CaseRecord["reportType"]) {
-  return type === "gi_biopsy" ? "GI biopsy" : "Breast core biopsy";
+  return REPORT_TYPE_LABELS[type];
 }
 
 function friendlyMissing(value: string) {
   if (FIELD_LABELS[value]) return FIELD_LABELS[value];
   return value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function timecode(milliseconds: number) {
+  return clock(Math.max(0, Math.floor(milliseconds / 1000)));
+}
+
+function recordingDate(timestamp: number) {
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "numeric",
+    month: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(timestamp);
+}
+
+async function audioDuration(file: File) {
+  return await new Promise<number | undefined>((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = document.createElement("audio");
+    let settled = false;
+    const finish = (value?: number) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    const timeout = window.setTimeout(() => finish(), 3500);
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => finish(Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : undefined);
+    audio.onerror = () => finish();
+    audio.src = url;
+  });
 }
 
 export function CaseWorkspace({ caseId }: { caseId: string }) {
@@ -72,6 +106,7 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
   const generateUploadUrl = useMutation(api.assets.generateUploadUrl);
   const attachAsset = useMutation(api.assets.attach);
   const processDictation = useAction(api.processing.run);
+  const checkCaseGaps = useAction(api.processing.checkGaps);
   const [localCase, setCaseItem] = useState<CaseRecord | null>(null);
   const caseItem = localCase ?? (remoteCase ? remoteCase as CaseRecord : null);
   const [recording, setRecording] = useState(false);
@@ -85,6 +120,11 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
   const [error, setError] = useState("");
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
   const [copied, setCopied] = useState(false);
+  const [checkingGaps, setCheckingGaps] = useState(false);
+  const [completionReview, setCompletionReview] = useState<{
+    missingFields: string[];
+    uncertainties: CaseRecord["uncertainties"];
+  } | null>(null);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -119,7 +159,11 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
     saveTimerRef.current = window.setTimeout(() => savePatch({ [field]: value }), 900);
   }
 
-  async function uploadAsset(file: File, kind: "audio" | "image") {
+  async function uploadAsset(
+    file: File,
+    kind: "audio" | "image",
+    metadata: { recordedAt?: number; durationMs?: number } = {},
+  ) {
     if (!sessionToken || !caseItem) throw new Error("Your session has expired");
     const uploadUrl = await generateUploadUrl({
       sessionToken,
@@ -140,6 +184,8 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
       filename: file.name,
       mimeType: file.type || "application/octet-stream",
       size: file.size,
+      ...(metadata.recordedAt ? { recordedAt: metadata.recordedAt } : {}),
+      ...(metadata.durationMs ? { durationMs: metadata.durationMs } : {}),
     });
     return { assetId };
   }
@@ -183,7 +229,11 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
     try {
       const extension = blob.type.includes("mp4") ? "m4a" : "webm";
       const file = new File([blob], `${caseItem.caseNumber}-dictation-${Date.now()}.${extension}`, { type: blob.type });
-      const { assetId } = await uploadAsset(file, "audio");
+      const recordedAt = startedRef.current || Date.now();
+      const { assetId } = await uploadAsset(file, "audio", {
+        recordedAt,
+        durationMs: Math.max(1000, Date.now() - recordedAt),
+      });
       setNotice("Transcribing and structuring…");
       await runProcessing({ assetId });
       setNotice("Draft updated from your dictation.");
@@ -304,7 +354,11 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
     setError("");
     setNotice("Uploading your recording…");
     try {
-      const { assetId } = await uploadAsset(file, "audio");
+      const durationMs = await audioDuration(file);
+      const { assetId } = await uploadAsset(file, "audio", {
+        recordedAt: Date.now(),
+        durationMs,
+      });
       setNotice("Transcribing and structuring the uploaded recording…");
       await runProcessing({ assetId });
       setNotice("Draft updated from your uploaded recording.");
@@ -334,10 +388,59 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
     }
   }
 
+  async function runGapCheck(forCompletion = false) {
+    if (!sessionToken || !caseItem) return;
+    setCheckingGaps(true);
+    setError("");
+    setNotice("Checking the full case for gaps and conflicts…");
+    try {
+      const result = await checkCaseGaps({
+        sessionToken,
+        caseId: caseItem._id as Id<"cases">,
+        draft: {
+          specimen: caseItem.specimen,
+          clinicalHistory: caseItem.clinicalHistory,
+          grossDescription: caseItem.grossDescription,
+          microscopicDescription: caseItem.microscopicDescription,
+          diagnosis: caseItem.diagnosis,
+          comment: caseItem.comment,
+          transcript: caseItem.transcript,
+          report: caseItem.report || buildReport(caseItem),
+        },
+      });
+      if (!result.ok) throw new Error(result.error);
+      setCaseItem((current) => current ? {
+        ...current,
+        missingFields: result.review.missingFields,
+        uncertainties: result.review.uncertainties,
+      } : current);
+      if (forCompletion) setCompletionReview(result.review);
+      setNotice(result.review.missingFields.length || result.review.uncertainties.length
+        ? "Review complete. Items needing attention are listed."
+        : "Review complete. No gaps or conflicts were flagged.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not check this case");
+      setNotice("");
+    } finally {
+      setCheckingGaps(false);
+    }
+  }
+
   async function markComplete() {
     if (!caseItem) return;
-    await savePatch({ status: caseItem.status === "completed" ? "draft" : "completed" });
-    setCaseItem((current) => current ? { ...current, status: current.status === "completed" ? "draft" : "completed" } : current);
+    if (caseItem.status === "completed") {
+      await savePatch({ status: "draft" });
+      setCaseItem((current) => current ? { ...current, status: "draft" } : current);
+      return;
+    }
+    await runGapCheck(true);
+  }
+
+  async function confirmComplete() {
+    if (!caseItem) return;
+    await savePatch({ status: "completed" });
+    setCaseItem((current) => current ? { ...current, status: "completed" } : current);
+    setCompletionReview(null);
   }
 
   async function copyReport() {
@@ -374,8 +477,8 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
         </div>
         <div className="case-header-actions">
           <span className={`save-indicator ${saveState}`}>{saveState === "saving" ? <LoaderCircle className="spin" /> : saveState === "error" ? <XCircle /> : <Check />} {saveState === "saving" ? "Saving" : saveState === "error" ? "Save failed" : "Saved"}</span>
-          <button className={`button ${caseItem.status === "completed" ? "button-quiet" : "button-primary"}`} onClick={markComplete}>
-            <CheckCircle2 size={17} /> {caseItem.status === "completed" ? "Reopen" : "Mark complete"}
+          <button className={`button ${caseItem.status === "completed" ? "button-quiet" : "button-primary"}`} onClick={markComplete} disabled={checkingGaps}>
+            {checkingGaps ? <LoaderCircle className="spin" size={17} /> : <CheckCircle2 size={17} />} {caseItem.status === "completed" ? "Reopen" : "Mark complete"}
           </button>
         </div>
       </header>
@@ -433,10 +536,21 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
             </div>
             <div className="recorder-assurance"><ShieldAlert size={15} /> HistoNote does not stop for ordinary pauses. The silence timer resets whenever speech is detected.</div>
 
-            <div className="transcript-head"><h3>Transcript</h3><button className="text-button" onClick={processTranscript} disabled={processing || !caseItem.transcript.trim()}><Sparkles size={15} /> Structure edited transcript</button></div>
-            <textarea className="transcript-editor" value={caseItem.transcript} onChange={(e) => edit("transcript", e.target.value)} placeholder="Your transcript will appear here after the recording stops. You can also type or paste dictation." />
+            <div className="transcript-head"><div><h3>Combined transcript</h3><small>Every recording is added to this case</small></div><button className="text-button" onClick={processTranscript} disabled={processing || !caseItem.transcript.trim()}><Sparkles size={15} /> Update draft</button></div>
+            <textarea className="transcript-editor" value={caseItem.transcript} onChange={(e) => edit("transcript", e.target.value)} placeholder="Your cumulative transcript will appear here after the first recording stops. You can also type or paste dictation." />
             {audioAssets.length > 0 && <div className="recording-list">
-              {audioAssets.slice(0, 3).map((asset) => <div key={asset._id}><FileAudio size={16} /><span>{asset.filename}</span>{asset.url && <audio controls preload="metadata" src={asset.url} />}<button className="text-button" onClick={() => retryRecording(asset._id)} disabled={processing}>Retry</button></div>)}
+              <div className="recording-list-head"><strong>All recordings ({audioAssets.length})</strong><span>Timeline timestamps are approximate</span></div>
+              {[...audioAssets].sort((a, b) => a.createdAt - b.createdAt).map((asset, index) => <section className="recording-item" key={asset._id}>
+                <div className="recording-item-head">
+                  <div><FileAudio size={16} /><span><strong>Recording {index + 1}</strong><small>{recordingDate(asset.recordedAt || asset.createdAt)}{asset.durationMs ? ` · ${timecode(asset.durationMs)}` : ""}</small></span></div>
+                  <button className="text-button" onClick={() => retryRecording(asset._id)} disabled={processing}>Retry</button>
+                </div>
+                {asset.url && <audio controls preload="metadata" src={asset.url} />}
+                {asset.processingError && <p className="recording-error"><AlertCircle size={13} />{asset.processingError}</p>}
+                {asset.transcriptSegments?.length ? <div className="recording-timeline">
+                  {asset.transcriptSegments.map((segment, segmentIndex) => <div key={`${asset._id}-${segmentIndex}`}><time>{timecode(segment.startMs)}–{timecode(segment.endMs)}</time><p>{segment.text}</p></div>)}
+                </div> : asset.transcript ? <p className="recording-transcript">{asset.transcript}</p> : <p className="recording-pending">No saved transcript for this recording yet. Retry to add it to the timeline.</p>}
+              </section>)}
             </div>}
           </section>
 
@@ -466,6 +580,9 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
             <div className="review-list">
               {caseItem.missingFields.length ? caseItem.missingFields.map((item, index) => <div className="missing-item" key={`${item}-${index}`}><AlertCircle size={17} /><span>{friendlyMissing(item)}</span></div>) : <div className="complete-item"><CheckCircle2 size={17} /><span>Required fields are present. Verify the content.</span></div>}
             </div>
+            <button className="button button-quiet gap-check-button" onClick={() => runGapCheck(false)} disabled={checkingGaps || processing}>
+              {checkingGaps ? <LoaderCircle className="spin" size={16} /> : <ListChecks size={16} />} Check for gaps
+            </button>
           </section>
 
           {caseItem.uncertainties.length > 0 && <section className="review-card uncertainty-card">
@@ -485,6 +602,18 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
           </section>
         </aside>
       </div>
+
+      {completionReview && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCompletionReview(null); }}>
+        <section className="modal completion-modal" role="dialog" aria-modal="true" aria-labelledby="completion-review-title">
+          <button className="modal-close" onClick={() => setCompletionReview(null)} aria-label="Close">×</button>
+          <p className="overline">PRE-COMPLETION REVIEW</p>
+          <h2 id="completion-review-title">{completionReview.missingFields.length || completionReview.uncertainties.length ? "Review before completing" : "No gaps were flagged"}</h2>
+          <p>{completionReview.missingFields.length || completionReview.uncertainties.length ? "HistoNote found information that may need your attention. You can keep editing or complete the case after reviewing it." : "The automated check found no missing information or unresolved conflicts. Please still verify the full report before sign-out."}</p>
+          {completionReview.missingFields.length > 0 && <div className="completion-review-group"><strong>Missing information</strong>{completionReview.missingFields.map((item, index) => <div className="missing-item" key={`${item}-${index}`}><AlertCircle size={16} /><span>{friendlyMissing(item)}</span></div>)}</div>}
+          {completionReview.uncertainties.length > 0 && <div className="completion-review-group"><strong>Conflicts or uncertainty</strong>{completionReview.uncertainties.map((item, index) => <div className="completion-conflict" key={`${item.field}-${index}`}><ShieldAlert size={16} /><span><b>{item.field}</b>{item.issue}{item.sourceQuote && <q>{item.sourceQuote}</q>}</span></div>)}</div>}
+          <div className="completion-actions"><button className="button button-quiet" onClick={() => setCompletionReview(null)}>Keep editing</button><button className="button button-primary" onClick={confirmComplete}>Complete anyway</button></div>
+        </section>
+      </div>}
     </main>
   );
 }
